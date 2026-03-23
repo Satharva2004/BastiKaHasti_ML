@@ -27,6 +27,13 @@ class FraudFeatureEngineer:
     def run(self) -> Tuple[pd.DataFrame, Dict[str, Dict[str, int]]]:
         """Execute the full cleaning and feature engineering workflow."""
         dataframe = self._load_dataframe()
+        dataframe = self.run_pipeline(dataframe)
+        summary = self._build_summary(dataframe)
+        self._print_summary(summary)
+        return dataframe, summary
+
+    def run_pipeline(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """Run the reusable dataframe-to-dataframe pipeline."""
         dataframe = self._normalize_schema(dataframe)
         dataframe = self._clean_core_fields(dataframe)
         dataframe = self._build_user_features(dataframe)
@@ -35,10 +42,9 @@ class FraudFeatureEngineer:
         dataframe = self._build_network_features(dataframe)
         dataframe = self._build_risk_features(dataframe)
         dataframe = self._build_advanced_features(dataframe)
+        dataframe = self._build_stage_three_features(dataframe)
         dataframe = self._build_pattern_flags(dataframe)
-        summary = self._build_summary(dataframe)
-        self._print_summary(summary)
-        return dataframe, summary
+        return dataframe
 
     def _load_dataframe(self) -> pd.DataFrame:
         """Read the source CSV once with pandas' default engine."""
@@ -178,6 +184,36 @@ class FraudFeatureEngineer:
             0.0,
         )
         dataframe["post_txn_balance_danger"] = dataframe["account_balance"] - dataframe["clean_amount"]
+        return dataframe
+
+    def _build_stage_three_features(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """Add training-oriented features derived from the cleaned dataset."""
+        dataframe["is_cross_city"] = (
+            dataframe["canonical_city"].astype(str).str.lower().str.strip()
+            != dataframe["merchant_canonical_city"].astype(str).str.lower().str.strip()
+        ).astype(np.int8)
+
+        dataframe["hour"] = dataframe["standardized_timestamp"].dt.hour.fillna(12).astype(int)
+        dataframe["is_odd_hour"] = dataframe["hour"].between(0, 4, inclusive="both").astype(np.int8)
+
+        positive_spend_deviation = dataframe["spend_deviation"].clip(lower=0)
+        short_burst_signal = (dataframe["txn_count_1min"] / 5.0).clip(lower=0, upper=3)
+        hourly_burst_signal = (dataframe["txn_count_1h"] / 20.0).clip(lower=0, upper=3)
+        device_signal = ((dataframe["device_user_degree"] - 1) / 3.0).clip(lower=0, upper=3)
+        failure_signal = dataframe["consecutive_failures"].clip(lower=0, upper=5) / 5.0
+        odd_hour_signal = dataframe["is_odd_hour"].astype(float)
+        cross_city_signal = dataframe["is_cross_city"].astype(float)
+
+        anomaly_components = (
+            positive_spend_deviation
+            + short_burst_signal
+            + hourly_burst_signal
+            + device_signal
+            + failure_signal
+            + odd_hour_signal
+            + cross_city_signal
+        )
+        dataframe["anomaly_score"] = (anomaly_components / 7.0).round(4)
         return dataframe
 
     def _build_pattern_flags(self, dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -519,3 +555,13 @@ class FraudFeatureEngineer:
                     running_failures = 0
 
         return pd.Series(output, index=statuses.index)
+
+
+def run_pipeline(dataframe_or_path: pd.DataFrame | str) -> pd.DataFrame:
+    """Convenience wrapper for callers that want dataframe-to-dataframe output."""
+    if isinstance(dataframe_or_path, pd.DataFrame):
+        dataframe = dataframe_or_path.copy()
+        return FraudFeatureEngineer(csv_path="").run_pipeline(dataframe)
+
+    dataframe, _ = FraudFeatureEngineer(csv_path=dataframe_or_path).run()
+    return dataframe

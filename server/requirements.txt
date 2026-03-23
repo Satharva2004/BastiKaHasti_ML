@@ -3,3 +3,8 @@ pandas
 fastapi
 python-multipart
 uvicorn
+scikit-learn
+joblib
+xgboost
+shap
+imbalanced-learn
