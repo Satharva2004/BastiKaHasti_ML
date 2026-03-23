@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, Optional
 
 from app.core.pipeline import FraudFeatureEngineer
@@ -31,11 +32,38 @@ def run_cleaning_pipeline(csv_path: str, output_path: Optional[str] = None) -> P
         "clean_amount",
         "account_balance",
         "ip_address",
+        "user_avg_spend",
+        "spend_deviation",
+        "is_new_device",
+        "txn_count_1min",
+        "txn_count_1h",
+        "time_diff",
+        "prev_status",
+        "consecutive_failures",
+        "device_user_degree",
+        "ip_velocity_all_users",
+        "is_micro_transaction",
+        "failed_to_success_ratio_1h",
+        "payment_method_entropy_10m",
+        "balance_depletion_ratio",
+        "post_txn_balance_danger",
+        "is_cross_city",
+        "hour",
+        "is_odd_hour",
+        "anomaly_score",
+        "pattern_velocity",
+        "pattern_device",
+        "pattern_amount",
+        "pattern_micro",
+        "pattern_failure_burst",
+        "pattern_time_gap",
+        "fraud_label",
     ]
 
     cleaned_dataframe = dataframe[cleaned_columns].copy()
 
     if output_path:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         cleaned_dataframe.to_csv(output_path, index=False)
 
     return {
