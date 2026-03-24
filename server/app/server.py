@@ -24,6 +24,7 @@ app.add_middleware(
 
 
 @app.get("/health")
+@app.head("/health")
 async def health_check() -> dict[str, str]:
     """Simple health endpoint for hosting and monitoring."""
     return {"status": "ok"}
