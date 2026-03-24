@@ -2,8 +2,35 @@ import { useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SectionIntro } from '../components/SectionIntro'
 import { SectionShell } from '../components/SectionShell'
-import { analyzeCsv, resolveDownloadUrl } from '../lib/api'
 import type { PredictResponse } from '../types/api'
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? 'https://bastikahasti-ml.onrender.com'
+
+async function analyzeCsv(file: File): Promise<PredictResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/predict-csv`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    const message = await response.text()
+    throw new Error(message || 'Upload failed.')
+  }
+
+  return (await response.json()) as PredictResponse
+}
+
+function resolveDownloadUrl(downloadUrl: string) {
+  if (downloadUrl.startsWith('http://') || downloadUrl.startsWith('https://')) {
+    return downloadUrl
+  }
+
+  return `${API_BASE_URL}${downloadUrl}`
+}
 
 export function UploadPage() {
   const inputId = useId()

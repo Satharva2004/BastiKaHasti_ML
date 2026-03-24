@@ -37,11 +37,11 @@ export function ResultsPage() {
       <div className="workspace-header reveal is-visible" data-reveal>
         <div>
           <p className="eyebrow">RESULTS WORKSPACE</p>
-          <h2>Fraud intelligence dashboard</h2>
+          <h2>Fraud intelligence control room</h2>
           <p className="section-copy">
-            File ID: {fileId ?? 'unknown'} . Explore the cleaned dataset, data quality,
-            pattern engine, model performance, and transaction-level evidence from one
-            workspace.
+            File ID: {fileId ?? 'unknown'} . Explore the cleaned dataset, compact data
+            quality, interactive pattern distributions, model evidence, and user-level
+            transaction drilldown from one modular workspace.
           </p>
         </div>
         <div className="workspace-header__actions">
@@ -49,14 +49,6 @@ export function ResultsPage() {
             Upload another file
           </Link>
         </div>
-      </div>
-
-      <div className="workspace-tabs reveal is-visible" data-reveal>
-        <span className="workspace-tab workspace-tab--active">Overview</span>
-        <span className="workspace-tab">Data Quality</span>
-        <span className="workspace-tab">Distributions</span>
-        <span className="workspace-tab">Model Lab</span>
-        <span className="workspace-tab">Transaction Explorer</span>
       </div>
 
       {result ? (

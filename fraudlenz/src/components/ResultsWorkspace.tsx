@@ -1,34 +1,20 @@
-import { useMemo, useState } from 'react'
-import { resolveDownloadUrl } from '../lib/api'
-import type {
-  DistributionMap,
-  ModelArtifact,
-  PredictResponse,
-  RiskyTransaction,
-} from '../types/api'
+import { useEffect, useMemo, useState } from 'react'
+import type { ModelArtifact, PredictResponse, RiskyTransaction } from '../types/api'
 
-type ResultsWorkspaceProps = {
-  result: PredictResponse
-}
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? 'https://bastikahasti-ml.onrender.com'
 
-const paymentMethodDisplay: Record<string, string> = {
-  upi: 'UPI',
-  card: 'Card',
-  wallet: 'Wallet',
-  netbanking: 'Net Banking',
-  unknown_payment_method: 'Unknown',
-}
-
-const paymentMethodIcon: Record<string, string> = {
-  upi: 'UP',
-  card: 'CR',
-  wallet: 'WL',
-  netbanking: 'NB',
-  unknown_payment_method: '??',
+function resolveDownloadUrl(downloadUrl: string) {
+  if (downloadUrl.startsWith('http://') || downloadUrl.startsWith('https://')) {
+    return downloadUrl
+  }
+  return `${API_BASE_URL}${downloadUrl}`
 }
 
 function formatLabel(value: string) {
   return value
+    .replace(/^pattern_/, '')
+    .replace(/^numeric__|^categorical__/, '')
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (char) => char.toUpperCase())
 }
@@ -44,451 +30,480 @@ function formatPercent(value: number) {
   return `${(value * 100).toFixed(1)}%`
 }
 
-function DistributionCard({
+function getModelComplexity(modelName: string) {
+  return modelName === 'xgboost'
+    ? {
+        training: 'O(T · N · D)',
+        prediction: 'O(T · D)',
+        note: 'Boosting rounds × rows × tree depth',
+      }
+    : {
+        training: 'O(T · N · log N)',
+        prediction: 'O(T · D)',
+        note: 'Trees × rows × split search',
+      }
+}
+
+function paymentVisual(method: string) {
+  const value = method.toLowerCase()
+  if (value === 'upi') {
+    return 'https://commons.wikimedia.org/wiki/Special:Redirect/file/UPI%20logo.svg'
+  }
+  if (value === 'card') {
+    return 'https://commons.wikimedia.org/wiki/Special:Redirect/file/Mastercard-logo.svg'
+  }
+  return null
+}
+
+function mergeTransactions(result: PredictResponse) {
+  const seen = new Set<string>()
+  const merged: RiskyTransaction[] = []
+  ;[result.top_risky_transactions, ...result.models.map((model) => model.top_risky_transactions)]
+    .flat()
+    .forEach((transaction) => {
+      const key = `${String(transaction.transaction_id ?? 'unknown')}::${String(transaction.user_id ?? 'unknown')}`
+      if (seen.has(key)) return
+      seen.add(key)
+      merged.push(transaction)
+    })
+  return merged
+}
+
+function SimpleDistribution({
   title,
   items,
-  variant = 'default',
+  kind = 'default',
 }: {
   title: string
-  items: DistributionMap
-  variant?: 'default' | 'payment'
+  items: Record<string, number>
+  kind?: 'default' | 'payment'
 }) {
-  const entries = Object.entries(items) as Array<[string, number]>
-  entries.sort((a, b) => b[1] - a[1])
-  const maxValue = Math.max(...entries.map(([, value]) => value), 1)
+  const entries = Object.entries(items).sort((a, b) => b[1] - a[1]).slice(0, 6)
+  const max = Math.max(...entries.map(([, count]) => count), 1)
 
   return (
-    <article className="distribution-card reveal is-visible" data-reveal>
-      <header className="distribution-card__header">
-        <p className="eyebrow">DISTRIBUTION</p>
-        <h3>{title}</h3>
-      </header>
-
-      <div className="distribution-list distribution-list--tall">
-        {entries.map(([label, value], index) => (
-          <div
-            key={label}
-            className={`distribution-row${variant === 'payment' ? ' distribution-row--payment' : ''}`}
-            style={{ ['--delay' as string]: `${index * 35}ms` }}
-          >
-            <div className="distribution-row__meta">
-              <span className="distribution-row__label">
-                {variant === 'payment' ? (
-                  <span className="payment-pill">
-                    <span className="payment-pill__icon">
-                      {paymentMethodIcon[label] ?? label.slice(0, 2).toUpperCase()}
+    <article className="glass-panel section-panel">
+      <div className="section-panel__header">
+        <div>
+          <p className="eyebrow eyebrow--dark">Distribution</p>
+          <h3>{title}</h3>
+        </div>
+      </div>
+      <div className="data-bars">
+        {entries.map(([label, count]) => (
+          <div key={label} className="data-bar">
+            <div className="data-bar__meta">
+              <div className="data-bar__identity">
+                {kind === 'payment' ? (
+                  paymentVisual(label) ? (
+                    <span className="data-bar__icon">
+                      <img className="brand-icon brand-icon--image" src={paymentVisual(label) ?? ''} alt={label} />
                     </span>
-                    <span>{paymentMethodDisplay[label] ?? formatLabel(label)}</span>
-                  </span>
-                ) : (
-                  formatLabel(label)
-                )}
-              </span>
-              <strong>{formatNumber(value)}</strong>
+                  ) : (
+                    <span className="data-bar__icon data-bar__icon--fallback">{label.slice(0, 2).toUpperCase()}</span>
+                  )
+                ) : null}
+                <span>{formatLabel(label)}</span>
+              </div>
+              <strong>{formatNumber(count)}</strong>
             </div>
-            <div className="distribution-row__track">
-              <div
-                className="distribution-row__fill"
-                style={{ width: `${(value / maxValue) * 100}%` }}
-              />
+            <div className="data-bar__track">
+              <div className="data-bar__fill" style={{ width: `${(count / max) * 100}%` }} />
             </div>
           </div>
         ))}
       </div>
     </article>
-  )
-}
-
-function QualityPanel({
-  qualityMetrics,
-  cleaningActions,
-}: {
-  qualityMetrics: PredictResponse['quality_metrics']
-  cleaningActions: PredictResponse['cleaning_actions']
-}) {
-  const qualityLevelClass = `quality-badge quality-badge--${qualityMetrics.quality_level}`
-  const issueCards = Object.entries(qualityMetrics).filter(
-    ([key]) => !['quality_score', 'quality_level'].includes(key),
-  )
-
-  return (
-    <div className="result-panel reveal is-visible" data-reveal>
-      <div className="result-panel__header result-panel__header--spread">
-        <div>
-          <p className="eyebrow">DATA QUALITY</p>
-          <h3>How healthy is this upload?</h3>
-        </div>
-        <div className="quality-summary">
-          <span className={qualityLevelClass}>{qualityMetrics.quality_level}</span>
-          <strong>{qualityMetrics.quality_score}/100</strong>
-        </div>
-      </div>
-
-      <div className="metric-grid metric-grid--quality">
-        {issueCards.map(([key, value], index) => (
-          <article
-            key={key}
-            className="metric-card reveal is-visible"
-            data-reveal
-            style={{ ['--delay' as string]: `${index * 55}ms` }}
-          >
-            <p className="metric-card__label">{formatLabel(key)}</p>
-            <strong>{formatNumber(Number(value))}</strong>
-          </article>
-        ))}
-      </div>
-
-      <div className="action-grid">
-        {Object.entries(cleaningActions).map(([key, value]) => (
-          <article key={key} className="action-card">
-            <p className="metric-card__label">{formatLabel(key)}</p>
-            <p>{String(value)}</p>
-          </article>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function PatternPanel({
-  patternSummary,
-}: {
-  patternSummary: PredictResponse['pattern_summary']
-}) {
-  const patternEntries = Object.entries(patternSummary) as Array<[string, number]>
-  return (
-    <div className="result-panel reveal is-visible" data-reveal>
-      <div className="result-panel__header">
-        <p className="eyebrow">PATTERN ENGINE</p>
-        <h3>What the rule system is seeing</h3>
-      </div>
-      <div className="metric-grid metric-grid--patterns">
-        {patternEntries
-          .sort((a, b) => b[1] - a[1])
-          .map(([pattern, count], index) => (
-            <article
-              key={pattern}
-              className="metric-card reveal is-visible"
-              data-reveal
-              style={{ ['--delay' as string]: `${index * 55}ms` }}
-            >
-              <p className="metric-card__label">{formatLabel(pattern)}</p>
-              <strong>{formatNumber(Number(count))}</strong>
-            </article>
-          ))}
-      </div>
-    </div>
   )
 }
 
 function ModelPanel({ model }: { model: ModelArtifact }) {
+  const complexity = getModelComplexity(model.model_name)
+
   return (
-    <article className="result-panel reveal is-visible" data-reveal>
-      <div className="result-panel__header result-panel__header--spread">
-        <div>
-          <p className="eyebrow">MODEL LAB</p>
-          <h3>{formatLabel(model.model_name)}</h3>
-        </div>
-        <div className="model-downloads">
-          <a
-            className="button button--ghost button--small"
-            href={resolveDownloadUrl(model.predictions_download_url)}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Predictions CSV
-          </a>
-          <a
-            className="button button--ghost button--small"
-            href={resolveDownloadUrl(model.threshold_report_download_url)}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Thresholds CSV
-          </a>
-        </div>
-      </div>
-
-      <div className="result-grid result-grid--model">
-        {[
-          ['Accuracy', formatPercent(model.metrics.accuracy)],
-          ['Precision', formatPercent(model.metrics.precision)],
-          ['Recall', formatPercent(model.metrics.recall)],
-          ['F1 Score', formatPercent(model.metrics.f1)],
-          ['ROC AUC', formatPercent(model.metrics.roc_auc)],
-          ['Fraud detected', formatNumber(model.fraud_detected_full_dataset)],
-        ].map(([label, value]) => (
-          <article key={label} className="result-card">
-            <p className="result-card__label">{label}</p>
-            <h3>{value}</h3>
-          </article>
-        ))}
-      </div>
-
-      <div className="matrix-grid">
-        {Object.entries(model.confusion_matrix).map(([label, value]) => (
-          <article key={label} className="matrix-card">
-            <p className="metric-card__label">{formatLabel(label)}</p>
-            <strong>{formatNumber(value)}</strong>
-          </article>
-        ))}
-      </div>
-
-      <div className="dual-panel-grid">
-        <div className="mini-table-card">
-          <header className="mini-table-card__header">
-            <p className="eyebrow">THRESHOLDS</p>
-            <h4>Precision and recall by cutoff</h4>
-          </header>
-          <div className="mini-table-wrap">
-            <table className="mini-table">
-              <thead>
-                <tr>
-                  <th>Threshold</th>
-                  <th>Fraud</th>
-                  <th>Precision</th>
-                  <th>Recall</th>
-                </tr>
-              </thead>
-              <tbody>
-                {model.threshold_table.map((row) => (
-                  <tr key={row.threshold}>
-                    <td>{row.threshold.toFixed(1)}</td>
-                    <td>{formatNumber(row.predicted_fraud)}</td>
-                    <td>{formatPercent(row.precision)}</td>
-                    <td>{formatPercent(row.recall)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+    <div className="tab-stack">
+      <section className="glass-panel section-panel">
+        <div className="section-panel__header section-panel__header--spread">
+          <div>
+            <p className="eyebrow eyebrow--dark">Model Lab</p>
+            <h3>{formatLabel(model.model_name)}</h3>
+          </div>
+          <div className="download-row">
+            <a className="button button--ghost-dark button--small" href={resolveDownloadUrl(model.predictions_download_url)} target="_blank" rel="noreferrer">
+              Predictions CSV
+            </a>
+            <a className="button button--ghost-dark button--small" href={resolveDownloadUrl(model.threshold_report_download_url)} target="_blank" rel="noreferrer">
+              Thresholds CSV
+            </a>
           </div>
         </div>
 
-        <div className="mini-table-card">
-          <header className="mini-table-card__header">
-            <p className="eyebrow">FEATURE IMPORTANCE</p>
-            <h4>Top contributors</h4>
-          </header>
-          <div className="distribution-list">
-            {model.feature_importance.slice(0, 8).map((item) => (
-              <div key={item.feature_name} className="distribution-row">
-                <div className="distribution-row__meta">
-                  <span>{item.feature_name.replace(/^numeric__|^categorical__/, '')}</span>
-                  <strong>{item.importance_score.toFixed(3)}</strong>
-                </div>
-                <div className="distribution-row__track">
-                  <div
-                    className="distribution-row__fill"
-                    style={{
-                      width: `${(item.importance_score / (model.feature_importance[0]?.importance_score || 1)) * 100}%`,
-                    }}
-                  />
-                </div>
-              </div>
+        <div className="model-summary-grid">
+          <article className="model-score-card model-score-card--fraud">
+            <span>Fraud detected</span>
+            <strong>{formatNumber(model.fraud_detected_full_dataset)}</strong>
+            <small>{formatPercent(model.fraud_rate_full_dataset)} of all rows</small>
+          </article>
+          <article className="model-score-card model-score-card--safe">
+            <span>Non-fraud detected</span>
+            <strong>{formatNumber(model.predicted_non_fraud_full_dataset)}</strong>
+            <small>Predicted safe by the model</small>
+          </article>
+          <article className="model-score-card">
+            <span>Accuracy</span>
+            <strong>{formatPercent(model.metrics.accuracy)}</strong>
+            <small>Holdout benchmark</small>
+          </article>
+          <article className="model-score-card">
+            <span>Precision</span>
+            <strong>{formatPercent(model.metrics.precision)}</strong>
+            <small>{formatPercent(model.metrics.recall)} recall</small>
+          </article>
+        </div>
+
+        <div className="complexity-strip">
+          <article className="complexity-card">
+            <span>Training complexity</span>
+            <strong>{complexity.training}</strong>
+            <small>{complexity.note}</small>
+          </article>
+          <article className="complexity-card">
+            <span>Prediction complexity</span>
+            <strong>{complexity.prediction}</strong>
+            <small>Each row traverses all trees during inference</small>
+          </article>
+        </div>
+
+        <div className="matrix-and-chart">
+          <div className="matrix-board">
+            {Object.entries(model.confusion_matrix).map(([label, value]) => (
+              <article key={label} className="matrix-board__cell">
+                <span>{formatLabel(label)}</span>
+                <strong>{formatNumber(value)}</strong>
+              </article>
             ))}
           </div>
+
+          <div className="threshold-board">
+            <div className="timing-list">
+              {Object.entries(model.timing).map(([key, value]) => (
+                <div key={key} className="timing-list__row">
+                  <span>{formatLabel(key)}</span>
+                  <strong>{formatNumber(value, 2)} ms</strong>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
-      </div>
-    </article>
-  )
-}
-
-function TransactionExplorer({
-  transactions,
-}: {
-  transactions: RiskyTransaction[]
-}) {
-  const patternOptions = useMemo(() => {
-    const keys = new Set<string>()
-    transactions.forEach((transaction) => {
-      Object.keys(transaction).forEach((key) => {
-        if (key.startsWith('pattern_')) {
-          keys.add(key)
-        }
-      })
-    })
-    return ['all', ...Array.from(keys)]
-  }, [transactions])
-
-  const [selectedPattern, setSelectedPattern] = useState('all')
-  const [selectedTransaction, setSelectedTransaction] = useState<RiskyTransaction | null>(
-    transactions[0] ?? null,
-  )
-
-  const filteredTransactions = useMemo(() => {
-    if (selectedPattern === 'all') {
-      return transactions
-    }
-
-    return transactions.filter((transaction) => Number(transaction[selectedPattern] ?? 0) === 1)
-  }, [selectedPattern, transactions])
-
-  return (
-    <div className="result-panel reveal is-visible" data-reveal>
-      <div className="result-panel__header result-panel__header--spread">
-        <div>
-          <p className="eyebrow">TRANSACTION EXPLORER</p>
-          <h3>Click into risky transactions and pattern clusters</h3>
-        </div>
-        <div className="chip-list">
-          {patternOptions.map((pattern) => (
-            <button
-              key={pattern}
-              type="button"
-              className={`chip chip--interactive${selectedPattern === pattern ? ' chip--active' : ''}`}
-              onClick={() => setSelectedPattern(pattern)}
-            >
-              {pattern === 'all' ? 'All patterns' : formatLabel(pattern)}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="explorer-grid">
-        <div className="explorer-list">
-          {filteredTransactions.map((transaction) => (
-            <button
-              key={`${transaction.transaction_id}-${transaction.fraud_probability}`}
-              type="button"
-              className={`transaction-tile${selectedTransaction === transaction ? ' transaction-tile--active' : ''}`}
-              onClick={() => setSelectedTransaction(transaction)}
-            >
-              <div>
-                <p className="metric-card__label">{String(transaction.transaction_id ?? 'Unknown transaction')}</p>
-                <strong>{formatNumber(Number(transaction.clean_amount ?? 0), 2)}</strong>
-              </div>
-              <span>{formatPercent(Number(transaction.fraud_probability ?? 0))}</span>
-            </button>
-          ))}
-        </div>
-
-        <div className="transaction-detail">
-          {selectedTransaction ? (
-            <>
-              <div className="transaction-detail__hero">
-                <p className="eyebrow">SELECTED TRANSACTION</p>
-                <h3>{String(selectedTransaction.transaction_id ?? 'Unknown')}</h3>
-                <p>
-                  User {String(selectedTransaction.user_id ?? '-')} .
-                  Probability {formatPercent(Number(selectedTransaction.fraud_probability ?? 0))}
-                </p>
-              </div>
-              <div className="detail-grid">
-                {Object.entries(selectedTransaction).map(([key, value]) => (
-                  <div key={key} className="detail-row">
-                    <span>{formatLabel(key)}</span>
-                    <strong>{String(value)}</strong>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <p>No transaction selected.</p>
-          )}
-        </div>
-      </div>
+      </section>
     </div>
   )
 }
 
-export function ResultsWorkspace({ result }: ResultsWorkspaceProps) {
-  const preferredModel = result.models.find((model) => model.model_name === 'xgboost') ?? result.models[0]
+export function ResultsWorkspace({ result }: { result: PredictResponse }) {
+  const [activeTab, setActiveTab] = useState<'overview' | 'patterns' | 'models' | 'transactions'>('overview')
+  const [selectedModelName] = useState(
+    result.models.find((model) => model.model_name === 'xgboost')?.model_name ?? result.models[0]?.model_name ?? '',
+  )
+  const selectedModel = result.models.find((model) => model.model_name === selectedModelName) ?? result.models[0]
+  const transactions = useMemo(() => mergeTransactions(result), [result])
+  const users = useMemo(() => {
+    const grouped = new Map<string, { userId: string; total: number; maxRisk: number; totalAmount: number }>()
+    transactions.forEach((transaction) => {
+      const userId = String(transaction.user_id ?? 'unknown')
+      const probability = Number(transaction.fraud_probability ?? 0)
+      const amount = Number(transaction.clean_amount ?? 0)
+      const current = grouped.get(userId) ?? { userId, total: 0, maxRisk: 0, totalAmount: 0 }
+      current.total += 1
+      current.maxRisk = Math.max(current.maxRisk, probability)
+      current.totalAmount += amount
+      grouped.set(userId, current)
+    })
+    return Array.from(grouped.values()).sort((a, b) => b.maxRisk - a.maxRisk)
+  }, [transactions])
+
+  const [selectedUser, setSelectedUser] = useState(users[0]?.userId ?? 'unknown')
+  useEffect(() => {
+    if (!users.find((user) => user.userId === selectedUser)) {
+      setSelectedUser(users[0]?.userId ?? 'unknown')
+    }
+  }, [users, selectedUser])
+
+  const userTransactions = useMemo(
+    () =>
+      transactions
+        .filter((transaction) => String(transaction.user_id ?? 'unknown') === selectedUser)
+        .sort((a, b) => Number(b.fraud_probability ?? 0) - Number(a.fraud_probability ?? 0)),
+    [selectedUser, transactions],
+  )
+  const [selectedTransactionId, setSelectedTransactionId] = useState('')
+  useEffect(() => {
+    setSelectedTransactionId(String(userTransactions[0]?.transaction_id ?? ''))
+  }, [selectedUser, userTransactions])
+
+  const selectedTransaction =
+    userTransactions.find((transaction) => String(transaction.transaction_id) === selectedTransactionId) ?? userTransactions[0]
+  const [showAllDetails, setShowAllDetails] = useState(false)
+  const detailEntries = selectedTransaction ? Object.entries(selectedTransaction) : []
+  const visibleDetails = showAllDetails ? detailEntries : detailEntries.slice(0, 8)
 
   return (
-    <div className="result-stack" id="results">
-      <div className="result-header reveal is-visible" data-reveal>
-        <p className="eyebrow">ANALYSIS RESPONSE</p>
-        <h2>{result.filename}</h2>
-        <p className="section-copy">
-          Timestamp window: {result.timestamp_range.min} to {result.timestamp_range.max}
-        </p>
-      </div>
-
-      <div className="result-grid result-grid--headline">
-        {[
-          ['Rows analyzed', formatNumber(result.row_count)],
-          ['Columns available', formatNumber(result.column_count)],
-          ['Target column', result.target_column],
-          ['Quality score', `${result.quality_metrics.quality_score}/100`],
-          ['Fraud detected', formatNumber(preferredModel.fraud_detected_full_dataset)],
-          ['File ID', result.file_id],
-        ].map(([label, value]) => (
-          <article key={label} className="result-card reveal is-visible" data-reveal>
-            <p className="result-card__label">{label}</p>
-            <h3>{value}</h3>
-          </article>
-        ))}
-      </div>
-
-      <QualityPanel qualityMetrics={result.quality_metrics} cleaningActions={result.cleaning_actions} />
-
-      <PatternPanel patternSummary={result.pattern_summary} />
-
-      <div className="distribution-grid distribution-grid--wide">
-        <DistributionCard title="City Distribution" items={result.distributions.canonical_city} />
-        <DistributionCard
-          title="Merchant City Distribution"
-          items={result.distributions.merchant_canonical_city}
-        />
-        <DistributionCard
-          title="Payment Method Mix"
-          items={result.distributions.payment_method}
-          variant="payment"
-        />
-        <DistributionCard title="Merchant Categories" items={result.distributions.merchant_category} />
-      </div>
-
-      <div className="result-panel reveal is-visible" data-reveal>
-        <div className="result-panel__header result-panel__header--spread">
-          <div>
-            <p className="eyebrow">DATASET SNAPSHOT</p>
-            <h3>Quick file summary for the clean CSV</h3>
+    <div className="results-shell">
+      <section className="results-hero">
+        <div className="results-hero__copy">
+          <p className="eyebrow eyebrow--dark">Fraud Intelligence Workspace</p>
+          <h2>{result.filename}</h2>
+          <p className="results-hero__lead">
+            Cleaner layout, fewer but more meaningful metrics, and a user-first transaction view.
+          </p>
+          <div className="results-hero__actions">
+            <a className="button button--dark" href={resolveDownloadUrl(result.cleaned_download_url)} target="_blank" rel="noreferrer">
+              Download cleaned CSV
+            </a>
+            <div className="results-hero__meta">
+              <span>{result.label_mode.toUpperCase()} labels</span>
+              <span>{result.target_column}</span>
+              <span>{result.timestamp_range.min} to {result.timestamp_range.max}</span>
+            </div>
           </div>
-          <a
-            className="button button--ghost button--small"
-            href={resolveDownloadUrl(result.cleaned_download_url)}
-            target="_blank"
-            rel="noreferrer"
+        </div>
+
+        <div className="hero-summary-grid">
+          <article className="hero-kpi hero-kpi--primary">
+            <p>Fraud predicted by {formatLabel(selectedModel.model_name)}</p>
+            <strong>{formatNumber(selectedModel.fraud_detected_full_dataset)}</strong>
+            <span>{formatPercent(selectedModel.fraud_rate_full_dataset)} of file</span>
+          </article>
+          <article className="hero-kpi">
+            <p>Rows</p>
+            <strong>{formatNumber(result.row_count)}</strong>
+            <span>{formatNumber(result.column_count)} columns</span>
+          </article>
+          <article className="hero-kpi">
+            <p>Precision</p>
+            <strong>{formatPercent(selectedModel.metrics.precision)}</strong>
+            <span>{formatPercent(selectedModel.metrics.recall)} recall</span>
+          </article>
+          <article className="hero-kpi">
+            <p>Quality score</p>
+            <strong>{result.quality_metrics.quality_score.toFixed(0)}</strong>
+            <span>{result.quality_metrics.quality_level}</span>
+          </article>
+        </div>
+      </section>
+
+      <div className="workspace-switcher">
+        {[
+          ['overview', 'Overview'],
+          ['patterns', 'Patterns'],
+          ['models', 'Model Lab'],
+          ['transactions', 'Transactions'],
+        ].map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            className={`workspace-switcher__tab${activeTab === value ? ' workspace-switcher__tab--active' : ''}`}
+            onClick={() => setActiveTab(value as 'overview' | 'patterns' | 'models' | 'transactions')}
           >
-            Download cleaned CSV
-          </a>
-        </div>
-
-        <div className="result-grid result-grid--dataset">
-          <article className="result-card">
-            <p className="result-card__label">Duplicate rows</p>
-            <h3>{formatNumber(result.dataset_summary.duplicate_row_count)}</h3>
-          </article>
-          <article className="result-card">
-            <p className="result-card__label">Missing values</p>
-            <h3>{formatNumber(result.dataset_summary.missing_value_count)}</h3>
-          </article>
-          <article className="result-card">
-            <p className="result-card__label">P95 amount</p>
-            <h3>{formatNumber(result.dataset_summary.amount_summary.p95, 2)}</h3>
-          </article>
-          <article className="result-card">
-            <p className="result-card__label">P99 amount</p>
-            <h3>{formatNumber(result.dataset_summary.amount_summary.p99, 2)}</h3>
-          </article>
-        </div>
-
-        <div className="chip-list">
-          {result.columns.map((column) => (
-            <span key={column} className="chip">
-              {column}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="model-grid">
-        {result.models.map((model) => (
-          <ModelPanel key={model.model_name} model={model} />
+            {label}
+          </button>
         ))}
       </div>
 
-      <TransactionExplorer transactions={preferredModel.top_risky_transactions} />
+      {activeTab === 'overview' ? (
+        <div className="results-layout">
+          <div className="results-main">
+            <section className="glass-panel section-panel">
+              <div className="section-panel__header">
+                <div>
+                  <p className="eyebrow eyebrow--dark">File Snapshot</p>
+                  <h3>Minimal summary, high-signal numbers</h3>
+                </div>
+              </div>
+              <div className="compact-kpi-grid">
+                <article className="compact-kpi">
+                  <span>Missing values</span>
+                  <strong>{formatNumber(result.dataset_summary.missing_value_count)}</strong>
+                </article>
+                <article className="compact-kpi">
+                  <span>Duplicates</span>
+                  <strong>{formatNumber(result.dataset_summary.duplicate_row_count)}</strong>
+                </article>
+                <article className="compact-kpi">
+                  <span>Average amount</span>
+                  <strong>{formatNumber(result.dataset_summary.amount_summary.mean, 2)}</strong>
+                </article>
+                <article className="compact-kpi">
+                  <span>Pattern signals</span>
+                  <strong>{formatNumber(Object.values(result.pattern_summary).reduce((sum, value) => sum + value, 0))}</strong>
+                </article>
+              </div>
+              <div className="overview-spotlight">
+                <SimpleDistribution title="Payment mix" items={result.distributions.payment_method} kind="payment" />
+                <SimpleDistribution title="Top merchant categories" items={result.distributions.merchant_category} />
+              </div>
+            </section>
+
+            <section className="glass-panel section-panel">
+              <div className="section-panel__header section-panel__header--spread">
+                <div>
+                  <p className="eyebrow eyebrow--dark">Transaction Preview</p>
+                  <h3>Recent cleaned transactions</h3>
+                </div>
+              </div>
+              <div className="preview-sheet">
+                <div className="preview-sheet__head">
+                  <span>Transaction</span>
+                  <span>User</span>
+                  <span>Status</span>
+                  <span>Amount</span>
+                  <span>City</span>
+                </div>
+                {result.preview.slice(0, 6).map((row, index) => (
+                  <div key={`${row.transaction_id ?? index}`} className="preview-sheet__row">
+                    <span>{String(row.transaction_id ?? 'Unknown')}</span>
+                    <span>{String(row.user_id ?? 'Unknown')}</span>
+                    <span>{String(row.status ?? '-')}</span>
+                    <span>{String(row.clean_amount ?? row.transaction_amount ?? '-')}</span>
+                    <span>{String(row.canonical_city ?? row.user_location ?? '-')}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          <aside className="results-sidebar">
+            <section className="quality-rail glass-panel">
+              <div className="quality-rail__header">
+                <p className="eyebrow eyebrow--dark">Data Quality</p>
+                <div className={`quality-rail__tone quality-rail__tone--${result.quality_metrics.quality_level}`}>
+                  {result.quality_metrics.quality_level}
+                </div>
+              </div>
+              <div className="quality-rail__score">
+                <strong>{result.quality_metrics.quality_score.toFixed(0)}</strong>
+                <span>/100</span>
+              </div>
+              <div className="quality-rail__metrics">
+                {[
+                  ['Invalid IPs', result.quality_metrics.invalid_ip_count],
+                  ['Unknown devices', result.quality_metrics.unknown_device_count],
+                  ['Zero amounts', result.quality_metrics.zero_amount_count],
+                  ['Missing cities', result.quality_metrics.missing_city_count],
+                ].map(([label, value]) => (
+                  <div key={label} className="quality-rail__metric">
+                    <span>{label}</span>
+                    <strong>{formatNumber(Number(value))}</strong>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </aside>
+        </div>
+      ) : null}
+
+      {activeTab === 'patterns' ? (
+        <div className="analytics-grid">
+          <SimpleDistribution title="Pattern counts" items={result.pattern_summary} />
+          <SimpleDistribution title="All user cities" items={result.distributions.canonical_city} />
+          <SimpleDistribution title="Merchant categories" items={result.distributions.merchant_category} />
+        </div>
+      ) : null}
+
+      {activeTab === 'models' ? <ModelPanel model={selectedModel} /> : null}
+
+      {activeTab === 'transactions' ? (
+        <section className="glass-panel section-panel transaction-studio">
+          <div className="section-panel__header">
+            <div>
+              <p className="eyebrow eyebrow--dark">Transaction Studio</p>
+              <h3>Click a user, then inspect their transactions</h3>
+            </div>
+          </div>
+
+          <div className="studio-grid">
+            <div className="studio-rail">
+              <h4 className="studio-column__title">Users</h4>
+              <div className="user-list">
+                {users.map((user) => (
+                  <button
+                    key={user.userId}
+                    type="button"
+                    className={`user-card${selectedUser === user.userId ? ' user-card--active' : ''}`}
+                    onClick={() => setSelectedUser(user.userId)}
+                  >
+                    <strong>{user.userId}</strong>
+                    <span>{user.total} transactions</span>
+                    <small>Peak risk {formatPercent(user.maxRisk)}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="studio-main">
+              <div className="studio-user-summary">
+                <p className="eyebrow eyebrow--dark">Selected User</p>
+                <h4 className="studio-column__title">{selectedUser}</h4>
+                <div className="studio-user-summary__metrics">
+                  <span>{userTransactions.length} flagged transactions</span>
+                  <span>{formatNumber(userTransactions.reduce((sum, item) => sum + Number(item.clean_amount ?? 0), 0), 2)} total amount</span>
+                </div>
+              </div>
+
+              <div className="transaction-strip">
+                <div className="transaction-strip__header">
+                  <h4 className="studio-column__title">Transactions</h4>
+                  <span>{userTransactions.length} rows</span>
+                </div>
+                <div className="transaction-list">
+                  {userTransactions.map((transaction) => (
+                    <button
+                      key={String(transaction.transaction_id)}
+                      type="button"
+                      className={`transaction-card${String(transaction.transaction_id) === selectedTransactionId ? ' transaction-card--active' : ''}`}
+                      onClick={() => setSelectedTransactionId(String(transaction.transaction_id))}
+                    >
+                      <div>
+                        <strong>{String(transaction.transaction_id)}</strong>
+                        <span>{formatNumber(Number(transaction.clean_amount ?? 0), 2)}</span>
+                      </div>
+                      <small>{formatPercent(Number(transaction.fraud_probability ?? 0))}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="studio-detail glass-panel glass-panel--nested">
+                {selectedTransaction ? (
+                  <>
+                    <div className="studio-detail__hero">
+                      <p className="eyebrow eyebrow--dark">Selected Transaction</p>
+                      <h3>{String(selectedTransaction.transaction_id)}</h3>
+                      <p>
+                        User {String(selectedTransaction.user_id)} . Fraud probability{' '}
+                        {formatPercent(Number(selectedTransaction.fraud_probability ?? 0))}
+                      </p>
+                    </div>
+                    <div className="detail-grid detail-grid--studio">
+                      {visibleDetails.map(([key, value]) => (
+                        <article key={key} className="detail-card">
+                          <span>{formatLabel(key)}</span>
+                          <strong>{String(value)}</strong>
+                        </article>
+                      ))}
+                    </div>
+                    {detailEntries.length > 8 ? (
+                      <button type="button" className="button button--ghost-dark button--small" onClick={() => setShowAllDetails((value) => !value)}>
+                        {showAllDetails ? 'Show less' : 'Show more'}
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
     </div>
   )
 }
