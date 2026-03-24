@@ -200,7 +200,7 @@ class FraudFeatureEngineer:
         dataframe["hour"] = dataframe["standardized_timestamp"].dt.hour.fillna(12).astype(int)
         dataframe["is_odd_hour"] = dataframe["hour"].between(0, 4, inclusive="both").astype(np.int8)
         dataframe["is_post_failure_success"] = (
-            (dataframe["status"] == "success") & (dataframe["consecutive_failures"] >= 2)
+            (dataframe["status"] == "success") & (dataframe["consecutive_failures"] >= 3)
         ).astype(np.int8)
 
         positive_spend_deviation = dataframe["spend_deviation"].clip(lower=0)
@@ -245,8 +245,8 @@ class FraudFeatureEngineer:
             | (dataframe["ip_velocity_all_users"] > 10)
         ).astype(np.int8)
         dataframe["pattern_velocity"] = (
-            (dataframe["txn_count_1min"] > 5)
-            | ((dataframe["txn_count_1h"] > 20) & (dataframe["time_diff"] < 10))
+            (dataframe["txn_count_1min"] > 8)
+            | ((dataframe["txn_count_1h"] > 25) & (dataframe["time_diff"] < 5))
         ).astype(np.int8)
         dataframe["pattern_post_failure_success"] = dataframe["is_post_failure_success"].astype(np.int8)
         dataframe["pattern_odd_hour_transaction"] = (
