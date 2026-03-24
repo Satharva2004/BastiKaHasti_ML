@@ -53,10 +53,12 @@ FAILED_STATUSES = {"failed", "failure", "declined", "rejected"}
 SUCCESS_STATUSES = {"success", "successful", "approved", "completed"}
 
 PATTERN_COLUMNS = [
+    "pattern_location_mismatch",
+    "pattern_odd_hour_transaction",
+    "pattern_high_amount_vs_balance",
+    "pattern_unknown_device",
+    "pattern_failed_high_value",
+    "pattern_ip_risk",
     "pattern_velocity",
-    "pattern_device",
-    "pattern_amount",
-    "pattern_micro",
-    "pattern_failure_burst",
-    "pattern_time_gap",
+    "pattern_post_failure_success",
 ]

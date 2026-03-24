@@ -79,6 +79,8 @@ class FraudFeatureEngineer:
             "amt",
             "ip_address",
             "account_balance",
+            "fraud_label",
+            "fraud_reason",
         ]
 
         for column in raw_columns:
@@ -156,6 +158,7 @@ class FraudFeatureEngineer:
         """Track shared infrastructure signals across users."""
         dataframe["device_user_degree"] = dataframe.groupby("device_id")["user_id"].transform("nunique").astype(int)
         dataframe["ip_velocity_all_users"] = self._rolling_count(dataframe, "ip_address", "1h")
+        dataframe["ip_user_degree"] = dataframe.groupby("ip_address")["user_id"].transform("nunique").astype(int)
         return dataframe
 
     def _build_risk_features(self, dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -184,6 +187,7 @@ class FraudFeatureEngineer:
             0.0,
         )
         dataframe["post_txn_balance_danger"] = dataframe["account_balance"] - dataframe["clean_amount"]
+        dataframe["amount_to_balance_ratio"] = dataframe["balance_depletion_ratio"]
         return dataframe
 
     def _build_stage_three_features(self, dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -195,36 +199,70 @@ class FraudFeatureEngineer:
 
         dataframe["hour"] = dataframe["standardized_timestamp"].dt.hour.fillna(12).astype(int)
         dataframe["is_odd_hour"] = dataframe["hour"].between(0, 4, inclusive="both").astype(np.int8)
+        dataframe["is_post_failure_success"] = (
+            (dataframe["status"] == "success") & (dataframe["consecutive_failures"] >= 2)
+        ).astype(np.int8)
 
         positive_spend_deviation = dataframe["spend_deviation"].clip(lower=0)
         short_burst_signal = (dataframe["txn_count_1min"] / 5.0).clip(lower=0, upper=3)
         hourly_burst_signal = (dataframe["txn_count_1h"] / 20.0).clip(lower=0, upper=3)
         device_signal = ((dataframe["device_user_degree"] - 1) / 3.0).clip(lower=0, upper=3)
+        ip_signal = ((dataframe["ip_user_degree"] - 1) / 4.0).clip(lower=0, upper=3)
         failure_signal = dataframe["consecutive_failures"].clip(lower=0, upper=5) / 5.0
         odd_hour_signal = dataframe["is_odd_hour"].astype(float)
         cross_city_signal = dataframe["is_cross_city"].astype(float)
+        recovery_signal = dataframe["is_post_failure_success"].astype(float)
 
         anomaly_components = (
             positive_spend_deviation
             + short_burst_signal
             + hourly_burst_signal
             + device_signal
+            + ip_signal
             + failure_signal
             + odd_hour_signal
             + cross_city_signal
+            + recovery_signal
         )
-        dataframe["anomaly_score"] = (anomaly_components / 7.0).round(4)
+        dataframe["anomaly_score"] = (anomaly_components / 9.0).round(4)
         return dataframe
 
     def _build_pattern_flags(self, dataframe: pd.DataFrame) -> pd.DataFrame:
-        """Translate engineered features into binary fraud flags."""
-        dataframe["pattern_velocity"] = (dataframe["txn_count_1min"] > 5).astype(np.int8)
-        dataframe["pattern_device"] = (dataframe["device_user_degree"] > 3).astype(np.int8)
-        dataframe["pattern_amount"] = (dataframe["spend_deviation"] > 2).astype(np.int8)
-        dataframe["pattern_micro"] = dataframe["is_micro_transaction"].astype(np.int8)
-        dataframe["pattern_failure_burst"] = (dataframe["consecutive_failures"] >= 3).astype(np.int8)
-        dataframe["pattern_time_gap"] = (dataframe["time_diff"] < 5).astype(np.int8)
+        """Translate business-friendly fraud heuristics into binary pattern flags."""
+        dataframe["pattern_location_mismatch"] = dataframe["is_cross_city"].astype(np.int8)
+        dataframe["pattern_high_amount_vs_balance"] = dataframe["amount_to_balance_ratio"].between(0.9, 1.5).astype(
+            np.int8
+        )
+        dataframe["pattern_unknown_device"] = (
+            (dataframe["device_id"] == "UNKNOWN_DEVICE") | (dataframe["is_new_device"] == 1)
+        ).astype(np.int8)
+        dataframe["pattern_failed_high_value"] = (
+            dataframe["status"].isin(FAILED_STATUSES) & (dataframe["clean_amount"] > 5000)
+        ).astype(np.int8)
+        dataframe["pattern_ip_risk"] = (
+            (dataframe["ip_address"] == "0.0.0.0")
+            | (dataframe["ip_user_degree"] > 3)
+            | (dataframe["ip_velocity_all_users"] > 10)
+        ).astype(np.int8)
+        dataframe["pattern_velocity"] = (
+            (dataframe["txn_count_1min"] > 5)
+            | ((dataframe["txn_count_1h"] > 20) & (dataframe["time_diff"] < 10))
+        ).astype(np.int8)
+        dataframe["pattern_post_failure_success"] = dataframe["is_post_failure_success"].astype(np.int8)
+        dataframe["pattern_odd_hour_transaction"] = (
+            (dataframe["is_odd_hour"] == 1)
+            & (
+                (dataframe["clean_amount"] >= 5000)
+                | (dataframe["is_cross_city"] == 1)
+                | (dataframe["pattern_unknown_device"] == 1)
+                | (dataframe["pattern_ip_risk"] == 1)
+            )
+        ).astype(np.int8)
         dataframe["fraud_label"] = dataframe[PATTERN_COLUMNS].max(axis=1).astype(np.int8)
+        dataframe["fraud_reason"] = dataframe[PATTERN_COLUMNS].apply(
+            lambda row: "; ".join(column for column, value in row.items() if value),
+            axis=1,
+        ).replace("", "no_rule_triggered")
         return dataframe
 
     def _build_summary(self, dataframe: pd.DataFrame) -> Dict[str, Dict[str, int]]:
